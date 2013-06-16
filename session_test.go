@@ -29,10 +29,6 @@ func withSession(t *testing.T, f func(*Session)) {
 	f(c)
 }
 
-func TestSession(t *testing.T) {
-	//testSession(t)
-}
-
 func TestGetDataNoExist(t *testing.T) {
 	withSession(t, func(c *Session) {
 		path := "/test/alwaysmissing"
@@ -67,6 +63,7 @@ func TestGetDataExist(t *testing.T) {
 func TestCreateEphemeral(t *testing.T) {
 	withSession(t, func(c *Session) {
 		path := "/test/should_be_ephemeral"
+		defer c.Delete(path, -1)
 
 		if path, err := c.Create(path, []byte("foobar"), CreateEphemeral, AclOpen); err != nil {
 			t.Fatalf("expected to create ephemeral node at %q, got: %v", path, err)

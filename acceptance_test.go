@@ -3,8 +3,6 @@
 // license that can be found in the LICENSE file.
 // Source code and contact info at http://github.com/streadway/zk
 
-// +build acceptance
-
 package zk
 
 import (
@@ -12,7 +10,13 @@ import (
 	"time"
 )
 
-// testSessionPool creates a buffer channel and fills it with results from
+func acceptance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping acceptance test when -short flag is used")
+	}
+}
+
+// testSessionPool creates a buffered channel and fills it with results from
 // testSession(t)
 func testSessionPool(t *testing.T, count int) chan *Session {
 	clients := make(chan *Session, count)
@@ -48,7 +52,8 @@ func testIncrementSpin(t *testing.T, pool chan *Session, count int, path string)
 }
 
 func TestIncrementRace(t *testing.T) {
-	//t.Skip()
+	acceptance(t)
+
 	withSession(t, func(c *Session) {
 		path := "/test/acceptance_sequence"
 		pool := testSessionPool(t, 10)
@@ -79,6 +84,7 @@ func TestIncrementRace(t *testing.T) {
 }
 
 func TestDialExpiredSession(t *testing.T) {
+	acceptance(t)
 	withSession(t, func(c *Session) {
 		c.Close()
 
@@ -93,6 +99,8 @@ func TestDialExpiredSession(t *testing.T) {
 }
 
 func TestReconnectSetsWatches(t *testing.T) {
+	acceptance(t)
+
 	path := "/test/should_contain_foobar"
 	watch := make(chan Event)
 
@@ -125,6 +133,8 @@ func TestReconnectSetsWatches(t *testing.T) {
 }
 
 func TestUnbufferedWatchIsReentrant(t *testing.T) {
+	acceptance(t)
+
 	withSession(t, func(c *Session) {
 		var watches = []struct {
 			path string
@@ -167,6 +177,8 @@ func TestUnbufferedWatchIsReentrant(t *testing.T) {
 }
 
 func TestRepeatedUnbufferedWatch(t *testing.T) {
+	acceptance(t)
+
 	path := "/test/should_contain_foobar"
 	watch := make(chan Event)
 	const count = 10
@@ -182,12 +194,94 @@ func TestRepeatedUnbufferedWatch(t *testing.T) {
 }
 
 func TestKeepalive(t *testing.T) {
+	acceptance(t)
+
 	path := "/test/should_contain_foobar"
 	withSession(t, func(c *Session) {
 		time.Sleep(c.Timeout + time.Second)
 		_, _, err := c.Get(path, nil)
 		if err != nil {
 			t.Fatalf("expected to keep a session alive, got: %q", err)
+		}
+	})
+}
+
+func TestConcurrent(t *testing.T) {
+	acceptance(t)
+
+	path := "/test/should_have_concurrent_reader_writer"
+	withSession(t, func(c *Session) {
+		sets := make(chan int, 100)
+		done := make(chan bool)
+
+		c.Create(path, []byte{0}, CreateEphemeral, AclOpen)
+		defer c.Delete(path, -1)
+
+		go func() {
+			defer close(sets)
+			for i := 1; i <= cap(sets); i++ {
+				if _, err := c.Set(path, []byte{byte(i)}, -1); err != nil {
+					t.Fatalf("expected to set path, got: %q", err)
+				}
+			}
+		}()
+
+		go func() {
+			defer close(done)
+			for _ = range sets {
+				if _, _, err := c.Get(path, nil); err != nil {
+					t.Fatalf("expected to get path, got: %q", err)
+				}
+			}
+		}()
+
+		<-done
+
+		body, _, err := c.Get(path, nil)
+		if err != nil {
+			t.Fatalf("expected to finally get path, got: %q", err)
+		}
+		if len(body) == 0 || body[0] != byte(cap(sets)) {
+			t.Fatalf("expected to set all values, got %v", body)
+		}
+	})
+}
+
+func TestSessionRedial(t *testing.T) {
+	acceptance(t)
+
+	path := "/test/should_be_ephemeral"
+	withSession(t, func(c *Session) {
+		var (
+			err   error
+			tries = 5
+
+			// try for 2 session timeout periods to create 5 sessions.
+			ticks = time.Tick(c.Config.Timeout * 2 / time.Duration(tries))
+		)
+
+		if _, err := c.Create(path, []byte{42}, CreateEphemeral, AclOpen); err != nil {
+			t.Fatalf("expected to create ephemeral node, got: %q", err)
+		}
+
+		for ; tries > 0; tries-- {
+			<-ticks
+			if c, err = Dial(c.Config); err != nil {
+				t.Fatalf("expected to redial, got: %q", err)
+			}
+		}
+
+		data, _, err := c.Get(path, nil)
+		if err != nil {
+			t.Fatalf("expected to get ephemeral node after session timeout, got: %q", err)
+		}
+
+		if len(data) == 0 || data[0] != 42 {
+			t.Fatalf("expected to get node data after session timeout, got: %q", data)
+		}
+
+		if err := c.Delete(path, -1); err != nil {
+			t.Fatalf("expected to cleanup ephemeral node, got: %q", err)
 		}
 	})
 }

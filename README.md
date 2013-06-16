@@ -15,6 +15,8 @@ Code: http://github.com/streadway/zk
 Fork, write tests, fail tests, fix stuff, pass tests, `go fmt`, `go vet`, open
 a pull request.
 
+A zookeeper server should be running on 127.0.0.1:2181 with a node /test.
+
 # TODO
 
   * Reconnection or other kind of connection management
