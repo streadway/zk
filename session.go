@@ -203,6 +203,36 @@ func (tx txn) decode(in proto.Input) error {
 	return nil
 }
 
+type txset struct {
+	xid  int32
+	txns map[int32]*txn
+}
+
+// mutates tx by replacing its missing xid with a new one and remembers the tx
+// for the response.
+func (s *txset) pushAndPrepare(tx *txn) {
+	s.xid++
+
+	// supports special xids like xidSetAuth
+	// tx comes with its own xid.
+	if tx.xid == 0 {
+		tx.xid = s.xid
+	}
+
+	// even special xids should not collide
+	if s.txns[tx.xid] != nil {
+		panic("duplicate transaction: please report a bug with a test case")
+	}
+
+	s.txns[tx.xid] = tx
+}
+
+func (s *txset) pop(xid int32) *txn {
+	tx := s.txns[xid]
+	delete(s.txns, xid)
+	return tx
+}
+
 // pops and merges the set of watches for an event type
 func (zk *Session) watches(watch Event) []chan<- Event {
 	switch watch.Type {
@@ -316,10 +346,10 @@ func (zk Session) notifier() {
 
 func (zk Session) muxer(errs chan error) {
 	var (
-		err     error
-		xid     int32
-		pending = make(map[int32]*txn)
-		health  = time.NewTicker(zk.Timeout / 3)
+		err      error
+		pending  = txset{txns: make(map[int32]*txn)}
+		health   = time.NewTicker(zk.Timeout / 3)
+		deadline = zk.Timeout
 	)
 
 	defer health.Stop()
@@ -328,26 +358,23 @@ func (zk Session) muxer(errs chan error) {
 		select {
 		case now := <-health.C:
 			zk.send(&proto.RequestHeader{Type: int32(opPing), Xid: int32(xidPing)})
-			zk.conn.SetDeadline(now.Add(zk.Timeout))
+			zk.conn.SetDeadline(now.Add(deadline))
 
 		case req := <-zk.sends:
-			xid++
-			if req.xid == 0 {
-				req.xid = xid
-			}
-			if pending[req.xid] != nil {
-				panic("duplicate send: please report a bug with a test case")
-			}
-			pending[req.xid] = req
+			pending.pushAndPrepare(req)
 			if err = req.encode(&zk); err != nil {
 				err = ErrConnection
 				goto error
 			}
 
 		case pkt := <-zk.recvs:
+			if pkt.Zxid > zk.Config.Zxid {
+				zk.Config.Zxid = pkt.Zxid
+			}
+
 			switch pkt.Xid {
 			case xidPing:
-				zk.conn.SetDeadline(time.Now().Add(zk.Timeout))
+				zk.conn.SetDeadline(time.Now().Add(deadline))
 
 			case xidWatch:
 				ev := &proto.WatcherEvent{}
@@ -361,17 +388,11 @@ func (zk Session) muxer(errs chan error) {
 				}
 
 			default:
-				if pkt.Zxid < zk.Config.Zxid {
-					panic("out of order delivery")
-				}
-				zk.Config.Zxid = pkt.Zxid
-
-				tx := pending[pkt.Xid]
+				tx := pending.pop(pkt.Xid)
 				if tx == nil {
 					err = ErrProtocol
 					goto error
 				}
-				delete(pending, pkt.Xid)
 
 				if pkt.Err != 0 {
 					tx.err = errCode(pkt.Err).toError()
@@ -404,7 +425,7 @@ func (zk Session) muxer(errs chan error) {
 error:
 	// cleanup
 	zk.err = err
-	for _, tx := range pending {
+	for _, tx := range pending.txns {
 		tx.err = err
 		tx.fin <- true
 		<-tx.ack

@@ -30,7 +30,7 @@ type Event struct {
 // Event chans receive a single Event and are removed from this map when the
 // watch at that path is triggered.
 type Watches struct {
-	m sync.Mutex
+	m   sync.Mutex
 	reg map[string][]chan<- Event
 }
 
