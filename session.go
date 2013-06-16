@@ -49,7 +49,7 @@ type Config struct {
 	Addrs []string
 
 	// net.Conn factory - default is DialRandom
-	Dialer func(conf *Config) (net.Conn, error)
+	Dial func(conf *Config) (net.Conn, error)
 
 	Id       int64  // Id is the session identity useful for server correlation
 	Password []byte // Password authenticates this connection to the session id
@@ -110,15 +110,15 @@ func Dial(conf *Config) (*Session, error) {
 		zk.Config.Timeout = Timeout
 	}
 
-	if zk.Dialer == nil {
-		zk.Dialer = DialRandom
+	if zk.Dial == nil {
+		zk.Dial = DialRandom
 	}
 
 	if len(conf.Addrs) == 0 {
 		zk.Addrs = []string{Address}
 	}
 
-	zk.conn, err = zk.Dialer(zk.Config)
+	zk.conn, err = zk.Dial(zk.Config)
 	if err != nil {
 		return nil, err
 	}
